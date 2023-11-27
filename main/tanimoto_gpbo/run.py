@@ -141,27 +141,26 @@ class TanimotoGPBO_Optimizer(BaseOptimizer):
             
             # Optimize acquisition function
             bo_loop_logger.debug("Starting acquisition function optimization")
-            def _ga_inner_function(smiles_list):
+            def _acq_fn_handle(smiles_list):
                 with torch.no_grad():
                     out = eval_acq_function_on_smiles(smiles_list, acq_function, device)
                 return out
             with joblib.Parallel(n_jobs=4) as parallel:
                 acq_opt_output = default_ga(
                     starting_population_smiles=ga_start_smiles,
-                    scoring_function=_ga_inner_function,
+                    scoring_function=_acq_fn_handle,
                     max_generations=config["ga_max_generations"],
                     offspring_size=config["ga_offspring_size"],
                     population_size=config["ga_population_size"],
                     rng=rng,
                     parallel=parallel,
                 )
-            del _ga_inner_function  # might cause excess GPU memory to be used
             top_ga_smiles = sorted(acq_opt_output.scoring_func_evals.items(), key=lambda x: x[1], reverse=True)
             batch_candidate_smiles = [s for s, _ in top_ga_smiles]
 
             # Choose a batch of the top SMILES to evaluate which have not been measured before and log their acquisition function values
             eval_batch = [s for s in batch_candidate_smiles if s not in known_smiles_scores][:config["bo_batch_size"]]
-            eval_batch_acq_values = eval_acq_function_on_smiles(eval_batch, acq_function, device)
+            eval_batch_acq_values = _acq_fn_handle(eval_batch)
             bo_loop_logger.debug(f"Eval batch SMILES: {pformat(eval_batch)}")
             bo_loop_logger.debug(f"Eval batch acq values: {pformat(eval_batch_acq_values)}")
             
@@ -174,7 +173,7 @@ class TanimotoGPBO_Optimizer(BaseOptimizer):
             bo_loop_logger.info(f"End BO iteration {bo_iter}. Top scores so far:\n{pformat(heapq.nlargest(5, known_smiles_scores.values()))}")
 
             # Free up GPU memory for next iteration by deleting the model
-            del acq_function, gp_model
+            del acq_function, gp_model, _acq_fn_handle
             torch.cuda.empty_cache()
         
         if not self.finish:
