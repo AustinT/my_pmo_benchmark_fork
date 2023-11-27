@@ -81,6 +81,8 @@ def main():
         from main.chembo.run import ChemBOoptimizer as Optimizer 
     elif args.method == 'gpbo':
         from main.gpbo.run import GPBO_Optimizer as Optimizer
+    elif args.method == 'tanimoto_gpbo':
+        from main.tanimoto_gpbo.run import TanimotoGPBO_Optimizer as Optimizer
     elif args.method == 'stoned': 
         from main.stoned.run import Stoned_Optimizer as Optimizer
     elif args.method == "selfies_vae":
