@@ -14,9 +14,8 @@ rdBase.DisableLog('rdApp.error')
 
 import gpytorch
 import torch
-from botorch.acquisition import AcquisitionFunction, UpperConfidenceBound
 
-from trf23.tanimoto_gp import TanimotoKernelGP
+from trf23.tanimoto_gp import TanimotoKernelGP, batch_predict_mu_std_numpy
 from mol_ga import default_ga
 
 
@@ -45,26 +44,14 @@ def smiles_to_fingerprint_arr(smiles_list: list[str],) -> np.array:
     return np.asarray(fps, dtype=float)
 
 
-def eval_acq_function_on_smiles(
+def get_gp_pred_on_smiles(
     smiles_list: list[str],
-    acquisition_function: AcquisitionFunction,
+    model,
     device: torch.device,
     screen_batch_size: int = 1000,
-) -> list[float]:
-    """
-    Evaluate an acquisition function on a list of smiles.
-    
-    Return list of acquisition function values.
-    """
-    acq_fn_values = []
-    for batch_start in range(0, len(smiles_list), screen_batch_size):
-        screen_batch = smiles_list[batch_start:batch_start + screen_batch_size]
-        screen_batch_fp = smiles_to_fingerprint_arr(screen_batch,)
-        with torch.no_grad():
-            screen_batch_acq = acquisition_function(torch.as_tensor(screen_batch_fp).unsqueeze(1).to(device))
-            acq_fn_values.extend(screen_batch_acq.cpu().numpy().tolist())
-    return acq_fn_values
-
+) -> tuple[np.ndarray, np.ndarray]:
+    fps = smiles_to_fingerprint_arr(smiles_list,)
+    return batch_predict_mu_std_numpy(model, fps, device=device, batch_size=screen_batch_size)
 
 class TanimotoGPBO_Optimizer(BaseOptimizer):
 
@@ -130,7 +117,6 @@ class TanimotoGPBO_Optimizer(BaseOptimizer):
             # and 1.0 (pure exploration, i.e. random points will have a higher value than incumbant best point)
             ucb_beta = ucb_beta_arr[(bo_iter - 1) % len(ucb_beta_arr)]
             bo_loop_logger.info(f"UCB beta: {ucb_beta:.3f}")
-            acq_function = UpperConfidenceBound(gp_model, beta=ucb_beta) 
 
             # Pick starting population for acq opt GA
             ga_start_smiles = (
@@ -141,14 +127,13 @@ class TanimotoGPBO_Optimizer(BaseOptimizer):
             
             # Optimize acquisition function
             bo_loop_logger.debug("Starting acquisition function optimization")
-            def _acq_fn_handle(smiles_list):
-                with torch.no_grad():
-                    out = eval_acq_function_on_smiles(smiles_list, acq_function, device)
-                return out
+            def acq_fn(smiles_list):
+                mu, std = get_gp_pred_on_smiles(smiles_list, gp_model, device)
+                return (mu + ucb_beta * std).tolist()
             with joblib.Parallel(n_jobs=4) as parallel:
                 acq_opt_output = default_ga(
                     starting_population_smiles=ga_start_smiles,
-                    scoring_function=_acq_fn_handle,
+                    scoring_function=acq_fn,
                     max_generations=config["ga_max_generations"],
                     offspring_size=config["ga_offspring_size"],
                     population_size=config["ga_population_size"],
@@ -160,9 +145,12 @@ class TanimotoGPBO_Optimizer(BaseOptimizer):
 
             # Choose a batch of the top SMILES to evaluate which have not been measured before and log their acquisition function values
             eval_batch = [s for s in batch_candidate_smiles if s not in known_smiles_scores][:config["bo_batch_size"]]
-            eval_batch_acq_values = _acq_fn_handle(eval_batch)
+            mu_batch, std_batch = get_gp_pred_on_smiles(eval_batch, gp_model, device)
+            eval_batch_acq_values = [acq_opt_output.scoring_func_evals[s] for s in eval_batch]
             bo_loop_logger.debug(f"Eval batch SMILES: {pformat(eval_batch)}")
             bo_loop_logger.debug(f"Eval batch acq values: {pformat(eval_batch_acq_values)}")
+            bo_loop_logger.debug(f"Eval batch mu: {mu_batch.tolist()}")
+            bo_loop_logger.debug(f"Eval batch std: {std_batch.tolist()}")
             
             # Score the batch with the oracle
             eval_batch_scores = self.oracle(eval_batch)
@@ -173,7 +161,7 @@ class TanimotoGPBO_Optimizer(BaseOptimizer):
             bo_loop_logger.info(f"End BO iteration {bo_iter}. Top scores so far:\n{pformat(heapq.nlargest(5, known_smiles_scores.values()))}")
 
             # Free up GPU memory for next iteration by deleting the model
-            del acq_function, gp_model, _acq_fn_handle
+            del gp_model
             torch.cuda.empty_cache()
         
         if not self.finish:
