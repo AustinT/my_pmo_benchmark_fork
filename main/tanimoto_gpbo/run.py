@@ -148,7 +148,7 @@ class TanimotoGPBO_Optimizer(BaseOptimizer):
             mu_batch, std_batch = get_gp_pred_on_smiles(eval_batch, gp_model, device)
             eval_batch_acq_values = [acq_opt_output.scoring_func_evals[s] for s in eval_batch]
             bo_loop_logger.debug(f"Eval batch SMILES: {pformat(eval_batch)}")
-            bo_loop_logger.debug(f"Eval batch acq values: {pformat(eval_batch_acq_values)}")
+            bo_loop_logger.debug(f"Eval batch acq values: {eval_batch_acq_values}")
             bo_loop_logger.debug(f"Eval batch mu: {mu_batch.tolist()}")
             bo_loop_logger.debug(f"Eval batch std: {std_batch.tolist()}")
             
