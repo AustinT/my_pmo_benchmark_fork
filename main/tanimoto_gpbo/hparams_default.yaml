@@ -5,3 +5,4 @@ ga_start_population_size: 10000
 ga_population_size: 10000
 ga_max_generations: 5
 ga_offspring_size: 200
+max_heavy_atoms: 100

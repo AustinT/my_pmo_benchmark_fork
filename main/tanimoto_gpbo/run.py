@@ -141,10 +141,25 @@ class TanimotoGPBO_Optimizer(BaseOptimizer):
                     parallel=parallel,
                 )
             top_ga_smiles = sorted(acq_opt_output.scoring_func_evals.items(), key=lambda x: x[1], reverse=True)
-            batch_candidate_smiles = [s for s, _ in top_ga_smiles]
+            batch_candidate_smiles = iter([s for s, _ in top_ga_smiles])
 
-            # Choose a batch of the top SMILES to evaluate which have not been measured before and log their acquisition function values
-            eval_batch = [s for s in batch_candidate_smiles if s not in known_smiles_scores][:config["bo_batch_size"]]
+            # Choose a batch of the top SMILES to evaluate which
+            # 1) have not been measured before
+            # 2) are unique
+            # 3) not too many atoms
+            eval_batch: list[str] = []
+            while len(eval_batch) < config["bo_batch_size"]:
+                try:
+                    s = next(batch_candidate_smiles)
+                    if s not in known_smiles_scores and s not in eval_batch:
+                        mol = Chem.MolFromSmiles(s)
+                        if mol is not None and mol.GetNumHeavyAtoms() <= config["max_heavy_atoms"]:
+                            eval_batch.append(s)
+                        del mol
+                except StopIteration:
+                    break
+            
+            # Log info about the batch
             mu_batch, std_batch = get_gp_pred_on_smiles(eval_batch, gp_model, device)
             eval_batch_acq_values = [acq_opt_output.scoring_func_evals[s] for s in eval_batch]
             bo_loop_logger.debug(f"Eval batch SMILES: {pformat(eval_batch)}")
